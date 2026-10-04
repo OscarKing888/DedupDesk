@@ -1,0 +1,40 @@
+# Local SDKs and tools downloaded by build.ps1
+/.tools/
+/.dotnet/
+
+# .NET build output and portable release packages
+[Bb]in/
+[Oo]bj/
+/artifacts/
+*.nupkg
+*.snupkg
+
+# Isolated test fixtures, screenshots, reports and coverage
+[Tt]est[Rr]esults/
+/coverage/
+*.trx
+*.coverage
+*.coveragexml
+
+# Visual Studio / Rider machine-specific state
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.sln.iml
+
+# Local runtime diagnostics and catalog files
+*.log
+*.dmp
+catalog.db
+catalog.db-wal
+catalog.db-shm
+catalog.db-journal
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

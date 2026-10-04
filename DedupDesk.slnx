@@ -1,0 +1,4 @@
+<Solution>
+ <Folder Name="/src/"><Project Path="src/DedupDesk.Core/DedupDesk.Core.csproj"/><Project Path="src/DedupDesk.App/DedupDesk.App.csproj"/></Folder>
+ <Folder Name="/tests/"><Project Path="tests/DedupDesk.Tests/DedupDesk.Tests.csproj"/></Folder>
+</Solution>
