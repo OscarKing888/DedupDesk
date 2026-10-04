@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private bool initialized, changing, busy, recycling;
     private long runId, total;
     private int page, queryVersion;
+    private int progressGeneration, searchWorkerLimit, hashWorkerLimit;
     private string? folder;
     private IReadOnlyList<ResultRow> rows = [];
     private readonly Dictionary<long, long> checkedFiles = [];
@@ -35,7 +36,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         var args = Environment.GetCommandLineArgs(); smoke = args.Contains("--smoke");
-        settingsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DedupDesk", "settings.json");
+        settingsFile = smoke ? Path.Combine(Path.GetFullPath(args[Array.IndexOf(args, "--smoke") + 1]), "ui-settings.json")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DedupDesk", "settings.json");
         InitializeComponent();
         var cellText = new Style(typeof(TextBlock));
         cellText.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis));
@@ -46,8 +48,8 @@ public partial class MainWindow : Window
         RoleColumn.ItemsSource = new[] { "保留目录", "待清理目录" }; RootsGrid.ItemsSource = roots;
         FilterBox.ItemsSource = new[] { "全部文件", "照片", "视频", "照片和视频", "自定义扩展名" };
         SortBox.ItemsSource = new[] { "重复组", "名称", "大小", "路径" }; SortBox.SelectedIndex = 0;
-        if (!smoke && File.Exists(settingsFile))
-            try { settings = JsonSerializer.Deserialize<ScanOptions>(File.ReadAllText(settingsFile)) ?? new(); } catch (Exception ex) when (ex is IOException or JsonException) { ProgressText.Text = "设置无法读取，已使用默认值：" + ex.Message; }
+        if (File.Exists(settingsFile))
+            try { settings = SettingsStore.Load(settingsFile); } catch (Exception ex) when (ex is IOException or JsonException) { ProgressText.Text = "设置无法读取，已使用默认值：" + ex.Message; }
         ApplyOptions(settings); initialized = true;
         Loaded += async (_, _) =>
         {
@@ -82,15 +84,16 @@ public partial class MainWindow : Window
     }
     private void SaveSettings()
     {
-        if (smoke) return;
-        settings = CaptureOptions(); Directory.CreateDirectory(Path.GetDirectoryName(settingsFile)!);
-        var temporary = settingsFile + ".tmp"; File.WriteAllText(temporary, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true })); File.Move(temporary, settingsFile, true);
+        settings = CaptureOptions(); SettingsStore.Save(settingsFile, settings);
     }
     private void InvalidateResults()
     {
         if (!initialized || changing || busy) return;
         runId = 0; runOptions = null; queryVersion++; checkedFiles.Clear(); rows = []; ResultsGrid.ItemsSource = rows; FolderTree.Items.Clear(); total = 0; page = 0;
         EmptyText.Visibility = Visibility.Visible; EmptyText.Text = "配置已更改，请重新扫描。"; PageText.Text = "第 0 / 0 页"; SummaryText.Text = "旧结果已失效";
+        ShowWorkerCounts(0, 0, 0, 0);
+        try { SaveSettings(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ProgressText.Text = "目录设置保存失败：" + ex.Message; }
     }
     private void AddRoot_Click(object sender, RoutedEventArgs e)
     {
@@ -130,26 +133,35 @@ public partial class MainWindow : Window
         foreach (var root in options.Roots) disks.ForPath(root.Path);
         scanner = new(catalog, disks); cancellation = new(); runId = 0; runOptions = null; checkedFiles.Clear(); rows = []; ResultsGrid.ItemsSource = rows; FolderTree.Items.Clear();
         folder = null; page = 0; queryVersion++; SetBusy(true); elapsed.Restart(); EmptyText.Text = "正在扫描。完整指纹计算可能需要较长时间，可暂停或取消后恢复。"; EmptyText.Visibility = Visibility.Visible;
+        var generation = ++progressGeneration; ShowWorkerCounts(0, 0, 0, 0);
         var progress = new Progress<ScanProgress>(p =>
         {
-            if (!busy || recycling) return;
+            if (!busy || recycling || generation != progressGeneration) return;
+            ShowWorkerCounts(p.ActiveSearchWorkers, p.SearchWorkerLimit, p.ActiveHashWorkers, p.HashWorkerLimit);
             ProgressText.Text = $"{p.Stage}  ·  已发现 {p.Files:N0} 个文件  ·  已计算 {p.Hashed:N0}  ·  缓存命中 {p.CacheHits:N0}  ·  错误 {p.Errors:N0}  ·  平均读取 {Formatting.Bytes((long)(p.BytesRead / Math.Max(1, elapsed.Elapsed.TotalSeconds)))}/s";
         });
         try
         {
             var result = await Task.Run(() => scanner.RunAsync(options, progress, cancellation.Token));
             runId = result.RunId; runOptions = options; total = 0;
+            ShowWorkerCounts(0, result.SearchWorkerLimit, 0, result.HashWorkerLimit);
             SummaryText.Text = $"可清理 {result.Targets:N0} 个文件 · {Formatting.Bytes(result.Bytes)}";
             ProgressText.Text = $"完成 · {result.Files:N0} 个文件 · 已计算 {result.Hashed:N0} · 缓存命中 {result.CacheHits:N0} · 错误 {result.Errors:N0} · 用时 {elapsed.Elapsed:hh\\:mm\\:ss}";
             await LoadPageAsync(); await LoadTreeAsync();
         }
         catch (OperationCanceledException) { ProgressText.Text = "已取消。已完成的指纹已保存，可恢复任务；未完成文件会从头计算。"; EmptyText.Text = "任务未完成，不能执行回收操作。"; }
-        finally { SetBusy(false); cancellation.Dispose(); cancellation = null; ResumeButton.IsEnabled = true; }
+        finally { progressGeneration++; SetBusy(false); cancellation.Dispose(); cancellation = null; ResumeButton.IsEnabled = true; }
+    }
+    private void ShowWorkerCounts(int search, int searchLimit, int hash, int hashLimit)
+    {
+        searchWorkerLimit = searchLimit; hashWorkerLimit = hashLimit;
+        WorkerCountsText.Text = $"搜索线程：{search} / {searchLimit}　　计算线程：{hash} / {hashLimit}　（活动 / 上限）";
     }
     private void SetBusy(bool value)
     {
         busy = value; OptionsPanel.IsEnabled = !value; RootsGrid.IsEnabled = !value; AddButton.IsEnabled = RemoveButton.IsEnabled = SettingsButton.IsEnabled = ScanButton.IsEnabled = ResumeButton.IsEnabled = !value;
         PauseButton.IsEnabled = value && !recycling; CancelButton.IsEnabled = value; RecycleButton.IsEnabled = !value; ActivityBar.IsIndeterminate = value; PauseButton.Content = "暂停";
+        if (!value) ShowWorkerCounts(0, searchWorkerLimit, 0, hashWorkerLimit);
     }
     private async void Resume_Click(object sender, RoutedEventArgs e)
     {
@@ -241,6 +253,11 @@ public partial class MainWindow : Window
         if (catalog is null || runOptions is null) return;
         if (MessageBox.Show(this, $"将 {count:N0} 个文件移入回收站，共 {Formatting.Bytes(bytes)}。\n\n比较方式：{Formatting.Mode(runOptions.Mode)}\n保留目录中的文件保持不变。" + (runOptions.Mode == CompareMode.NameSize ? "\n当前只比较名字和大小，未核验文件内容。" : "\n回收前将重新读取并核验完整内容。") + "\n\n无法进入回收站的文件将跳过。", "移入回收站", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) != MessageBoxResult.Yes) return;
         recycling = true; SetBusy(true); cancellation = new(); long good = 0, bad = 0, processed = 0;
+        int activeVerification = 0; int verificationLimit = runOptions.Mode == CompareMode.NameSize ? 0 : 1;
+        ShowWorkerCounts(0, 0, 0, verificationLimit);
+        var verificationTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        verificationTimer.Tick += (_, _) => ShowWorkerCounts(0, 0, Volatile.Read(ref activeVerification), verificationLimit);
+        verificationTimer.Start();
         try
         {
             var service = new RecyclingService(catalog, new WindowsRecycleBin()); long after = 0;
@@ -250,7 +267,7 @@ public partial class MainWindow : Window
                 foreach (var id in batch)
                 {
                     cancellation.Token.ThrowIfCancellationRequested(); after = id;
-                    var result = await Task.Run(() => service.RecycleAsync(runId, id, runOptions, cancellation.Token)); if (result.Success) good++; else bad++; processed++; checkedFiles.Remove(id);
+                    var result = await Task.Run(() => service.RecycleAsync(runId, id, runOptions, cancellation.Token, working => Interlocked.Add(ref activeVerification, working ? 1 : -1))); if (result.Success) good++; else bad++; processed++; checkedFiles.Remove(id);
                     ProgressText.Text = $"回收进度 {processed:N0}/{count:N0} · 已移入回收站 {good:N0} · 跳过 {bad:N0} · {result.Message}";
                 }
                 if (ids is not null) break;
@@ -259,7 +276,7 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException) { ProgressText.Text = $"回收已取消 · 已完成 {good:N0} 个 · 跳过 {bad:N0} 个"; }
         catch (Exception ex) { ShowError(ex); }
-        finally { cancellation.Dispose(); cancellation = null; recycling = false; SetBusy(false); await LoadPageAsync(); }
+        finally { verificationTimer.Stop(); cancellation.Dispose(); cancellation = null; recycling = false; SetBusy(false); await LoadPageAsync(); }
     }
     private void Open_Click(object sender, RoutedEventArgs e) { if (ResultsGrid.SelectedItem is ResultRow row) OpenExplorer(row.Path, true); }
     private void Copy_Click(object sender, RoutedEventArgs e) { var paths = ResultsGrid.SelectedItems.Cast<ResultRow>().Select(r => r.Path); Clipboard.SetText(string.Join(Environment.NewLine, paths)); }
@@ -295,7 +312,13 @@ public partial class MainWindow : Window
             var payload = Enumerable.Repeat((byte)i, 4096 + i * 4096).ToArray(); File.WriteAllBytes(Path.Combine(keep, sub, $"IMG_{1000 + i}.jpg"), payload); File.WriteAllBytes(Path.Combine(target, sub, $"IMG_{1000 + i}.jpg"), payload);
         }
         ApplyOptions(new() { Roots = [new() { Path = keep }, new() { Path = target, Role = RootRole.Target }], CacheDirectory = Path.Combine(outputDirectory, "cache") });
+        InvalidateResults();
+        var reopened = new MainWindow(); var restored = reopened.CaptureOptions(); reopened.Close();
+        if (restored.Roots.Count != 2 || restored.Roots[0].Path != keep || restored.Roots[1].Path != target || restored.Roots[1].Role != RootRole.Target)
+            throw new InvalidOperationException("Added directories were not saved and restored before scanning");
         disks = new DiskMap(); await StartScanAsync(); if (rows.Count != 32) throw new InvalidOperationException("UI smoke result count mismatch");
+        if (!WorkerCountsText.Text.Contains("搜索线程：0 / 2") || !WorkerCountsText.Text.Contains("计算线程：0 / 0"))
+            throw new InvalidOperationException("Completed worker counts did not reset correctly");
         var checkedRow = rows.First(r => r.CanSelect); long checkedId = checkedRow.Id; checkedRow.Selected = true;
         SearchBox.Text = "IMG_1000"; await LoadPageAsync(); SearchBox.Text = ""; await LoadPageAsync();
         if (!rows.Single(r => r.Id == checkedId).Selected) throw new InvalidOperationException("Checkbox selection was lost while browsing");
@@ -310,7 +333,7 @@ public partial class MainWindow : Window
         if (rows.Count != 8 || rows.Any(r => r.Role != RootRole.Target)) throw new InvalidOperationException("Tree folder filter is incorrect");
         var settingsDialog = new SettingsWindow(CaptureOptions(), disks.Disks) { Owner = this }; settingsDialog.Show();
         await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle); settingsDialog.Close();
-        File.WriteAllText(Path.Combine(outputDirectory, "smoke.txt"), "PASS: 32 list records; 8 target tree records; checkbox selection survives search; settings window loads; no recycling performed.");
+        File.WriteAllText(Path.Combine(outputDirectory, "smoke.txt"), "PASS: directories restored before first scan; worker counts reset; 32 list records; 8 target tree records; checkbox selection survives search; settings window loads; no recycling performed.");
         async Task Capture(string name)
         {
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle); await Task.Delay(300); UpdateLayout();

@@ -9,7 +9,7 @@ public interface IRecycleBin
 }
 public sealed class RecyclingService(Catalog catalog, IRecycleBin recycleBin)
 {
-    public async Task<RecycleOutcome> RecycleAsync(long run, long id, ScanOptions options, CancellationToken token)
+    public async Task<RecycleOutcome> RecycleAsync(long run, long id, ScanOptions options, CancellationToken token, Action<bool>? hashWorking = null)
     {
         var row = catalog.GetRow(run, id);
         if (row is null) return new(false, "结果已不存在");
@@ -24,7 +24,7 @@ public sealed class RecyclingService(Catalog catalog, IRecycleBin recycleBin)
             // Hold target against writes, but allow the Shell to move it into the Recycle Bin.
             using var targetLock = new FileStream(row.Path, FileMode.Open, System.IO.FileAccess.Read, FileShare.Read | FileShare.Delete);
             var pause = new PauseGate();
-            var targetHash = options.Mode == CompareMode.NameSize ? null : await FileAccess.HashAsync(current, options.Mode, pause, null, token);
+            var targetHash = options.Mode == CompareMode.NameSize ? null : await FileAccess.HashAsync(current, options.Mode, pause, null, token, hashWorking);
             if (options.Mode != CompareMode.NameSize && targetHash != row.Hash) throw new IOException("目标内容已变化，请重扫");
             result = new(false, "没有仍然有效的保留副本");
             foreach (var keeper in catalog.Keepers(row))
@@ -41,7 +41,7 @@ public sealed class RecyclingService(Catalog catalog, IRecycleBin recycleBin)
                     {
                         if (!string.Equals(kept.Name, current.Name, StringComparison.OrdinalIgnoreCase)) continue;
                     }
-                    else if (await FileAccess.HashAsync(kept, options.Mode, pause, null, token) != targetHash) continue;
+                    else if (await FileAccess.HashAsync(kept, options.Mode, pause, null, token, hashWorking) != targetHash) continue;
                     result = await recycleBin.RecycleAsync(row.Path, () => current.SameVersion(FileAccess.Stat(row.Path)) && kept.SameVersion(FileAccess.Stat(keeper.Path)) && !Paths.HasReparseAncestor(row.Path), token);
                     break;
                 }

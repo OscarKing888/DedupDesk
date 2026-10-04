@@ -23,6 +23,7 @@ public sealed class ScanOptions
     public string CacheDirectory { get; set; } = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DedupDesk");
     public int CpuConcurrency { get; set; } = Environment.ProcessorCount;
     public Dictionary<string, int> DiskConcurrency { get; set; } = [];
+    public Dictionary<string, int> DiskSearchConcurrency { get; set; } = [];
     public bool ForceHash { get; set; }
     public HashSet<string>? Extensions() => Filter switch
     {
@@ -65,8 +66,10 @@ public sealed record FileStamp(string Path, string Name, string Parent, long Siz
     public bool SameVersion(FileStamp other) => Identity == other.Identity && Size == other.Size && Modified == other.Modified && Created == other.Created;
 }
 public sealed record IndexedFile(FileStamp Stamp, RootRole Role, string? Hash);
-public sealed record ScanSummary(long RunId, long Files, long Hashed, long CacheHits, long Errors, long Targets, long Bytes);
-public sealed record ScanProgress(long Files, long Hashed, long CacheHits, long Errors, long BytesRead, string Stage);
+public sealed record ScanSummary(long RunId, long Files, long Hashed, long CacheHits, long Errors, long Targets, long Bytes,
+    int SearchWorkerLimit = 0, int HashWorkerLimit = 0);
+public sealed record ScanProgress(long Files, long Hashed, long CacheHits, long Errors, long BytesRead, string Stage,
+    int ActiveSearchWorkers = 0, int SearchWorkerLimit = 0, int ActiveHashWorkers = 0, int HashWorkerLimit = 0);
 public sealed record ResultPage(IReadOnlyList<ResultRow> Rows, long Total);
 public sealed class ResultRow : INotifyPropertyChanged
 {

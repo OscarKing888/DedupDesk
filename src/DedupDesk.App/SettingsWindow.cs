@@ -11,7 +11,7 @@ public sealed class SettingsWindow : Window
     public ScanOptions Options { get; private set; }
     public SettingsWindow(ScanOptions input, IReadOnlyList<DiskInfo> source)
     {
-        Options = input.Clone(); Title = "性能与指纹缓存"; Width = 820; Height = 650; MinHeight = 580; WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Options = input.Clone(); Title = "性能与指纹缓存"; Width = 940; Height = 650; MinHeight = 580; WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var panel = new Grid { Margin = new Thickness(24) }; Content = panel;
         foreach (var h in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) panel.RowDefinitions.Add(new() { Height = h });
         void Put(UIElement child, int row) { Grid.SetRow(child, row); panel.Children.Add(child); }
@@ -22,12 +22,13 @@ public sealed class SettingsWindow : Window
         var cpuRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0,0,0,14) };
         cpuRow.Children.Add(new TextBlock { Text = $"计算并发（本机 {Environment.ProcessorCount} 个逻辑处理器）", VerticalAlignment = VerticalAlignment.Center, Margin = new(0,0,16,0) });
         var cpu = new TextBox { Text = Options.CpuConcurrency.ToString(), Width = 80 }; cpuRow.Children.Add(cpu); Put(cpuRow, 2);
-        Put(new TextBlock { Text = "每块物理磁盘的读取并发 · 机械盘建议 1，SSD 4，NVMe 8，网络路径 2", TextWrapping = TextWrapping.Wrap, Margin = new(0,0,0,10) }, 3);
-        var diskRows = source.Select(d => new DiskInfo { Key = d.Key, Name = d.Name, Volumes = d.Volumes, Concurrency = Options.DiskConcurrency.GetValueOrDefault(d.Key, d.Concurrency) }).ToList();
+        Put(new TextBlock { Text = "每盘独立并行搜索子目录。搜索默认：机械盘/未知设备 2、SSD 4、NVMe 8；计算读取默认：机械盘 1、SSD 4、NVMe 8。", TextWrapping = TextWrapping.Wrap, Margin = new(0,0,0,10) }, 3);
+        var diskRows = source.Select(d => new DiskInfo { Key = d.Key, Name = d.Name, Volumes = d.Volumes, Concurrency = Options.DiskConcurrency.GetValueOrDefault(d.Key, d.Concurrency), SearchConcurrency = Options.DiskSearchConcurrency.GetValueOrDefault(d.Key, d.SearchConcurrency) }).ToList();
         var grid = new DataGrid { ItemsSource = diskRows, Margin = new(0,0,0,16) };
         grid.Columns.Add(new DataGridTextColumn { Header = "设备", Binding = new Binding(nameof(DiskInfo.Name)), Width = new(1,DataGridLengthUnitType.Star), IsReadOnly = true });
         grid.Columns.Add(new DataGridTextColumn { Header = "卷", Binding = new Binding(nameof(DiskInfo.Volumes)), Width = 140, IsReadOnly = true });
-        grid.Columns.Add(new DataGridTextColumn { Header = "并发 1–64", Binding = new Binding(nameof(DiskInfo.Concurrency)) { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged }, Width = 100 }); Put(grid,4);
+        grid.Columns.Add(new DataGridTextColumn { Header = "搜索并发", Binding = new Binding(nameof(DiskInfo.SearchConcurrency)) { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged }, Width = 100 });
+        grid.Columns.Add(new DataGridTextColumn { Header = "计算读取并发", Binding = new Binding(nameof(DiskInfo.Concurrency)) { UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged }, Width = 120 }); Put(grid,4);
         var force = new CheckBox { Content = "下次扫描忽略已有指纹，重新计算完整哈希", IsChecked = Options.ForceHash, Margin = new(0,0,0,16) }; Put(force,5);
         var buttons = new DockPanel(); var clear = new Button { Content = "清理指纹缓存" }; buttons.Children.Add(clear);
         clear.Click += async (_, _) =>
@@ -42,9 +43,9 @@ public sealed class SettingsWindow : Window
         save.Click += (_, _) =>
         {
             grid.CommitEdit(DataGridEditingUnit.Cell, true); grid.CommitEdit(DataGridEditingUnit.Row, true);
-            if (!int.TryParse(cpu.Text, out int value) || value < 1 || value > 1024 || diskRows.Any(d => d.Concurrency < 1 || d.Concurrency > 64)) { MessageBox.Show(this, "计算并发需为 1–1024；磁盘并发需为 1–64。"); return; }
+            if (!int.TryParse(cpu.Text, out int value) || value < 1 || value > 1024 || diskRows.Any(d => d.Concurrency < 1 || d.Concurrency > 64 || d.SearchConcurrency < 1 || d.SearchConcurrency > 64)) { MessageBox.Show(this, "计算并发需为 1–1024；每盘搜索和计算读取并发均需为 1–64。"); return; }
             try { Options.CacheDirectory = Paths.Normalize(cache.Text); } catch (Exception ex) { MessageBox.Show(this, ex.Message); return; }
-            Options.CpuConcurrency = value; Options.ForceHash = force.IsChecked == true; Options.DiskConcurrency = diskRows.ToDictionary(d => d.Key, d => d.Concurrency); DialogResult = true;
+            Options.CpuConcurrency = value; Options.ForceHash = force.IsChecked == true; Options.DiskConcurrency = diskRows.ToDictionary(d => d.Key, d => d.Concurrency); Options.DiskSearchConcurrency = diskRows.ToDictionary(d => d.Key, d => d.SearchConcurrency); DialogResult = true;
         };
     }
 }

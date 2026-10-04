@@ -30,7 +30,7 @@ public static class FileAccess
         }
         return new(Paths.Normalize(path), f.Name, Paths.Normalize(f.DirectoryName!), f.Length, f.LastWriteTimeUtc.Ticks, f.CreationTimeUtc.Ticks, identity, links);
     }
-    public static async Task<string> HashAsync(FileStamp stamp, CompareMode mode, PauseGate pause, Action<int>? progress, CancellationToken token)
+    public static async Task<string> HashAsync(FileStamp stamp, CompareMode mode, PauseGate pause, Action<int>? progress, CancellationToken token, Action<bool>? working = null)
     {
         using var stream = new FileStream(stamp.Path, FileMode.Open, FileAccessMode, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         using var hash = IncrementalHash.CreateHash(mode == CompareMode.MD5 ? HashAlgorithmName.MD5 : HashAlgorithmName.SHA256);
@@ -40,8 +40,13 @@ public static class FileAccess
             while (true)
             {
                 await pause.WaitAsync(token);
-                int n = await stream.ReadAsync(buffer.AsMemory(), token); if (n == 0) break;
-                hash.AppendData(buffer, 0, n); progress?.Invoke(n);
+                working?.Invoke(true);
+                try
+                {
+                    int n = await stream.ReadAsync(buffer.AsMemory(), token); if (n == 0) break;
+                    hash.AppendData(buffer, 0, n); progress?.Invoke(n);
+                }
+                finally { working?.Invoke(false); }
             }
             if (!stamp.SameVersion(Stat(stamp.Path))) throw new IOException("文件在读取过程中发生变化，请重扫");
             return Convert.ToHexString(hash.GetHashAndReset());
@@ -57,6 +62,7 @@ public sealed class DiskInfo
     public string Name { get; set; } = "";
     public string Volumes { get; set; } = "";
     public int Concurrency { get; set; } = 1;
+    public int SearchConcurrency { get; set; } = 2;
 }
 public sealed class DiskMap
 {
@@ -79,7 +85,7 @@ public sealed class DiskMap
                 using (disk)
                 {
                     var index = Convert.ToInt32(disk["Index"]); var kind = media.GetValueOrDefault(index);
-                    var info = new DiskInfo { Key = "disk:" + index, Name = $"磁盘 {index} · {disk["Model"]}", Concurrency = kind.Bus == 17 ? 8 : kind.Media == 4 ? 4 : 1 };
+                    var info = new DiskInfo { Key = "disk:" + index, Name = $"磁盘 {index} · {disk["Model"]}", Concurrency = kind.Bus == 17 ? 8 : kind.Media == 4 ? 4 : 1, SearchConcurrency = kind.Bus == 17 ? 8 : kind.Media == 4 ? 4 : 2 };
                     var names = new List<string>();
                     foreach (ManagementObject partition in disk.GetRelated("Win32_DiskPartition"))
                         using (partition) foreach (ManagementObject logical in partition.GetRelated("Win32_LogicalDisk"))

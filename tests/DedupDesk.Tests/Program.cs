@@ -99,6 +99,55 @@ try
     result=await Scan(o); Assert(result.Summary.Targets==80,"cancelled run resumes by rediscovery"); Assert(cat.LastRun()?.State=="已完成","persistent task state");
     Log("PASS pause, cancel, resume, task persistence");
 
+    o=Setup("parallel-directory-search"); k=o.Roots[0].Path; t=o.Roots[1].Path;
+    Write(Path.Combine(k,"item.dat"),"x");
+    for(int i=0;i<620;i++) Write(Path.Combine(t,$"folder-{i:D4}","item.dat"),"x");
+    Directory.CreateDirectory(Path.Combine(t,"empty"));
+    var searchMap=new DiskMap(); var searchDisk=searchMap.ForPath(t);
+    foreach(int workers in new[]{1,4})
+    {
+        o.DiskSearchConcurrency[searchDisk.Key]=workers;
+        var observed=new System.Collections.Concurrent.ConcurrentQueue<ScanProgress>();
+        var observer=new InlineProgress<ScanProgress>(p=>observed.Enqueue(p));
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var summary=await new Scanner(new Catalog(o.CacheDirectory),searchMap).RunAsync(o,observer,timeout.Token);
+        Assert(summary.Files==621 && summary.Targets==620,"bounded directory queue drains without missing/duplicate files: "+workers);
+        Assert(observed.All(p=>p.SearchWorkerLimit==workers && p.ActiveSearchWorkers>=0 && p.ActiveSearchWorkers<=workers),"search activity stays within per-disk limit");
+        Assert(observed.All(p=>p.ActiveHashWorkers==0 && p.HashWorkerLimit==0),"name/size mode has no hash workers");
+        Assert(observed.Last().ActiveSearchWorkers==0 && observed.Last().ActiveHashWorkers==0,"completed workers return to zero");
+        Log($"SEARCH workers={workers}, peak sampled active={observed.Max(p=>p.ActiveSearchWorkers)}, files={summary.Files}");
+    }
+    o.Mode=CompareMode.SHA256; o.CpuConcurrency=2; o.DiskConcurrency[searchDisk.Key]=4;
+    var pausedObserver=new System.Collections.Concurrent.ConcurrentQueue<ScanProgress>();
+    scanner=new(new Catalog(o.CacheDirectory),searchMap); scanner.Pause.Pause();
+    using(var pausedCancellation=new CancellationTokenSource())
+    {
+        var pausedTask=scanner.RunAsync(o,new InlineProgress<ScanProgress>(p=>pausedObserver.Enqueue(p)),pausedCancellation.Token);
+        await Task.Delay(350);
+        Assert(pausedObserver.Any() && pausedObserver.All(p=>p.ActiveSearchWorkers==0 && p.ActiveHashWorkers==0 && p.HashWorkerLimit==2),"paused work is not counted, CPU limit is respected");
+        pausedCancellation.Cancel(); try{await pausedTask;}catch(OperationCanceledException){}
+        Assert(pausedObserver.Last().ActiveSearchWorkers==0 && pausedObserver.Last().ActiveHashWorkers==0,"cancelled workers return to zero");
+    }
+    var fingerprintPath=Path.Combine(testRoot,"activity-hash.bin"); File.WriteAllBytes(fingerprintPath,new byte[3*1024*1024]);
+    var hashGate=new PauseGate(); int hashActivity=0, blocks=0; var firstBlock=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var hashing=FileAccess.HashAsync(FileAccess.Stat(fingerprintPath),CompareMode.SHA256,hashGate,_=>{if(Interlocked.Increment(ref blocks)==1){hashGate.Pause();firstBlock.TrySetResult();}},CancellationToken.None,active=>Interlocked.Add(ref hashActivity,active?1:-1));
+    await firstBlock.Task.WaitAsync(TimeSpan.FromSeconds(5)); await Task.Delay(50);
+    Assert(!hashing.IsCompleted && Volatile.Read(ref hashActivity)==0,"hash activity releases its count while paused between blocks");
+    hashGate.Resume(); await hashing; Assert(hashActivity==0 && blocks==3,"hash activity is balanced after resume and completion");
+    using(var hashCancellation=new CancellationTokenSource())
+    {
+        try { await FileAccess.HashAsync(FileAccess.Stat(fingerprintPath),CompareMode.SHA256,new PauseGate(),null,hashCancellation.Token,active=>{Interlocked.Add(ref hashActivity,active?1:-1);if(active)hashCancellation.Cancel();}); }
+        catch(OperationCanceledException){}
+        Assert(hashActivity==0,"hash activity is balanced on read cancellation");
+    }
+    var savedPath=Path.Combine(testRoot,"automatic-settings","settings.json");
+    SettingsStore.Save(savedPath,o); var reopened=SettingsStore.Load(savedPath);
+    Assert(reopened.Roots.Count==2 && reopened.Roots[0].Path==k && reopened.Roots[1].Role==RootRole.Target && reopened.DiskSearchConcurrency[searchDisk.Key]==4,"directory roles and worker settings survive restart before scanning");
+    reopened.Roots.RemoveAt(1); reopened.Roots[0].Role=RootRole.Target; SettingsStore.Save(savedPath,reopened); reopened=SettingsStore.Load(savedPath);
+    Assert(reopened.Roots.Count==1 && reopened.Roots[0].Role==RootRole.Target,"removed directories and role edits persist");
+    Assert(!File.Exists(savedPath+".tmp"),"atomic settings save replaces temporary file");
+    Log("PASS per-disk parallel search, bounded queue, live worker counts, pause/cancel, automatic directory persistence");
+
     if(args.Contains("--recycle-test"))
     {
         string path=Path.Combine(testRoot,"recycle-"+Guid.NewGuid().ToString("N")+".txt"); Write(path,"isolated recycle test"); var stamp=FileAccess.Stat(path);
@@ -145,6 +194,10 @@ sealed class RecordingBin : IRecycleBin
 {
     public int Calls;
     public Task<RecycleOutcome> RecycleAsync(string path,Func<bool> validate,CancellationToken token){if(!validate())return Task.FromResult(new RecycleOutcome(false,"validation"));Calls++;return Task.FromResult(new RecycleOutcome(true,"test adapter (source preserved)"));}
+}
+sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+{
+    public void Report(T value)=>report(value);
 }
 sealed class FailingBin(string message) : IRecycleBin
 {

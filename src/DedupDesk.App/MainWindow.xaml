@@ -30,6 +30,6 @@
     <DockPanel Grid.Row="2" Margin="0,12,0,0"><StackPanel Orientation="Horizontal"><Button Content="选择本页可清理项" Click="SelectPage_Click"/><Button Content="移入回收站" Click="RecycleSelected_Click" x:Name="RecycleButton"/><Button Content="错误记录" Click="Errors_Click"/></StackPanel><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="上一页" Click="Prev_Click"/><TextBlock x:Name="PageText" Text="第 0 / 0 页" VerticalAlignment="Center" Margin="4,0,12,0"/><Button Content="下一页" Click="Next_Click" Margin="0"/></StackPanel></DockPanel>
    </Grid>
   </Border>
-  <StackPanel Grid.Row="4" Margin="0,12,0,0"><ProgressBar x:Name="ActivityBar" Height="3" Minimum="0" Maximum="1"/><TextBlock x:Name="ProgressText" Text="就绪" Foreground="#64748B" Margin="0,8,0,0" TextWrapping="Wrap"/></StackPanel>
+  <StackPanel Grid.Row="4" Margin="0,12,0,0"><ProgressBar x:Name="ActivityBar" Height="3" Minimum="0" Maximum="1"/><TextBlock x:Name="WorkerCountsText" Text="搜索线程：0 / 0　　计算线程：0 / 0　（活动 / 上限）" Foreground="#2563EB" FontWeight="SemiBold" Margin="0,8,0,0" ToolTip="显示正在搜索目录、读取和计算哈希的工作任务数，每 250 毫秒刷新。排队和暂停不计入活动数。异步任务不等于独占的系统线程；名字＋大小模式无需哈希计算。"/><TextBlock x:Name="ProgressText" Text="就绪" Foreground="#64748B" Margin="0,5,0,0" TextWrapping="Wrap"/></StackPanel>
  </Grid>
 </Window>

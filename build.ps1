@@ -28,7 +28,15 @@ try {
         Copy-Item -LiteralPath (Join-Path $projectRoot 'VALIDATION.md') -Destination $output -Force
         $zip = Join-Path $projectRoot 'artifacts\DedupDesk-win-x64.zip'
         Compress-Archive -Path $output -DestinationPath $zip -Force
-        Get-FileHash -LiteralPath $zip -Algorithm SHA256 | Format-List
+        $packageStream = [IO.File]::OpenRead($zip)
+        $hashAlgorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $packageHash = [BitConverter]::ToString($hashAlgorithm.ComputeHash($packageStream)).Replace('-', '')
+        } finally {
+            $hashAlgorithm.Dispose()
+            $packageStream.Dispose()
+        }
+        Write-Output ('SHA256: ' + $packageHash)
         Write-Output ('Portable application: ' + (Join-Path $output 'DedupDesk.exe'))
     }
 } finally { Pop-Location }
